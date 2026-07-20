@@ -1,4 +1,4 @@
-<html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
@@ -132,6 +132,14 @@
             width: 100%;
         }
         .btn-apply:hover { background-color: #27ae60; }
+        .save-status {
+            min-height: 20px;
+            margin-top: 8px;
+            color: #d5f5e3;
+            font-size: 0.85rem;
+            font-weight: bold;
+            text-align: center;
+        }
         .hint { font-size: 0.8rem; color: #95a5a6; margin-top: 3px; }
         
         /* 오늘로 변경 버튼 스타일 */
@@ -227,15 +235,68 @@
                 <div class="hint">* 종료일 다음날이 자동으로 '개학일'이 됩니다.</div>
             </div>
 
-            <button class="btn-apply" onclick="updateDashboard()">설정 저장 및 적용하기</button>
+            <button class="btn-apply" onclick="saveSettings()">설정 저장 및 적용하기</button>
+            <div id="save-status" class="save-status" aria-live="polite"></div>
         </div>
     </div>
 
     <script>
-        // 초기 기본 데이터 셋팅
-        document.getElementById('holiday-list').value = "2026-05-05:어린이날 🎈\n2026-06-05:개교기념일 🎉\n2026-10-03:개천절 🇰🇷";
-        document.getElementById('vacation-start').value = "2026-07-25";
-        document.getElementById('vacation-end').value = "2026-08-23";
+        // 관리자 설정은 브라우저 저장소(localStorage)에 보관됩니다.
+        const STORAGE_KEY = 'class-dashboard-settings-v2';
+        const DEFAULT_SETTINGS = {
+            holidayList: "2026-05-05:어린이날 🎈\n2026-06-05:개교기념일 🎉\n2026-10-03:개천절 🇰🇷",
+            vacationStart: "2026-07-25",
+            vacationEnd: "2026-08-23",
+            manualTeam: "auto",
+            manualLunch: "auto"
+        };
+
+        function applySettings(settings) {
+            document.getElementById('holiday-list').value = settings.holidayList ?? DEFAULT_SETTINGS.holidayList;
+            document.getElementById('vacation-start').value = settings.vacationStart ?? DEFAULT_SETTINGS.vacationStart;
+            document.getElementById('vacation-end').value = settings.vacationEnd ?? DEFAULT_SETTINGS.vacationEnd;
+            document.getElementById('manual-team').value = settings.manualTeam ?? DEFAULT_SETTINGS.manualTeam;
+            document.getElementById('manual-lunch').value = settings.manualLunch ?? DEFAULT_SETTINGS.manualLunch;
+        }
+
+        function loadSettings() {
+            try {
+                const saved = localStorage.getItem(STORAGE_KEY);
+                if (!saved) {
+                    applySettings(DEFAULT_SETTINGS);
+                    return;
+                }
+                const parsed = JSON.parse(saved);
+                applySettings({ ...DEFAULT_SETTINGS, ...parsed });
+            } catch (error) {
+                console.error('설정 불러오기 실패:', error);
+                applySettings(DEFAULT_SETTINGS);
+            }
+        }
+
+        function saveSettings() {
+            const settings = {
+                holidayList: document.getElementById('holiday-list').value.trim(),
+                vacationStart: document.getElementById('vacation-start').value,
+                vacationEnd: document.getElementById('vacation-end').value,
+                manualTeam: document.getElementById('manual-team').value,
+                manualLunch: document.getElementById('manual-lunch').value
+            };
+
+            const status = document.getElementById('save-status');
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+                updateDashboard();
+                status.innerText = '✅ 설정이 저장되어 화면에 적용되었습니다.';
+                window.clearTimeout(saveSettings.statusTimer);
+                saveSettings.statusTimer = window.setTimeout(() => {
+                    status.innerText = '';
+                }, 3000);
+            } catch (error) {
+                console.error('설정 저장 실패:', error);
+                status.innerText = '❌ 설정을 저장하지 못했습니다. 브라우저 저장 권한을 확인해 주세요.';
+            }
+        }
 
         let isAdminAuthenticated = false; // 인증 상태 변수
 
@@ -333,10 +394,15 @@
             
             const holidayMap = {};
             const lines = document.getElementById('holiday-list').value.split('\n');
-            for (let line of lines) {
-                if (line.includes(':')) {
-                    const [hDate, hName] = line.split(':');
-                    holidayMap[hDate.trim()] = hName.trim();
+            for (const rawLine of lines) {
+                const line = rawLine.trim();
+                const separatorIndex = line.indexOf(':');
+                if (separatorIndex > 0) {
+                    const hDate = line.slice(0, separatorIndex).trim();
+                    const hName = line.slice(separatorIndex + 1).trim();
+                    if (/^\d{4}-\d{2}-\d{2}$/.test(hDate) && hName) {
+                        holidayMap[hDate] = hName;
+                    }
                 }
             }
 
@@ -414,6 +480,7 @@
             lunchElement.className = "card-value gender-" + currentLunch.substring(0, 2);
         }
 
+        loadSettings();
         updateDashboard();
     </script>
 </body>
