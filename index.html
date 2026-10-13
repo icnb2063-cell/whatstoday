@@ -212,12 +212,13 @@
                     </select>
                 </div>
                 <div>
-                    <label for="manual-lunch">🍴 급식 순서 직접 수동 지정</label>
+                    <label for="manual-lunch">🍴 급식 교대 시작 설정</label>
                     <select id="manual-lunch" onchange="updateDashboard()">
-                        <option value="auto">🔄 자동 로테이션 계산</option>
-                        <option value="남자 먼저 👦">👦 남자 먼저</option>
-                        <option value="여자 먼저 👧">👧 여자 먼저</option>
+                        <option value="auto">🔄 기본 자동 로테이션</option>
+                        <option value="남자 먼저 👦">👦 이 날짜부터 남자 먼저로 시작</option>
+                        <option value="여자 먼저 👧">👧 이 날짜부터 여자 먼저로 시작</option>
                     </select>
+                    <div class="hint">* 설정한 날짜를 기준으로 이후 등교일마다 남→여→남→여 또는 여→남→여→남 순서로 자동 교대됩니다.</div>
                 </div>
             </div>
 
@@ -245,14 +246,16 @@
         // 관리자 설정은 브라우저 저장소(localStorage)에 보관합니다.
         // 일부 브라우저/로컬 파일 환경에서는 localStorage 사용이 제한될 수 있어
         // 화면에는 항상 즉시 적용되도록 메모리 설정값도 함께 사용합니다.
-        const STORAGE_KEY = 'class-dashboard-settings-v3';
+        const STORAGE_KEY = 'class-dashboard-settings-v4';
+        const LEGACY_STORAGE_KEYS = ['class-dashboard-settings-v3', 'class-dashboard-settings-v2'];
         let currentSettings = null;
         const DEFAULT_SETTINGS = {
             holidayList: "2026-05-05:어린이날 🎈\n2026-06-05:개교기념일 🎉\n2026-10-03:개천절 🇰🇷",
             vacationStart: "2026-07-25",
             vacationEnd: "2026-08-23",
             manualTeam: "auto",
-            manualLunch: "auto"
+            manualLunch: "auto",
+            lunchAnchorDate: ""
         };
 
         function applySettings(settings) {
@@ -264,15 +267,55 @@
             document.getElementById('manual-lunch').value = currentSettings.manualLunch ?? DEFAULT_SETTINGS.manualLunch;
         }
 
+        function getTodayKstDateString() {
+            const now = new Date();
+            const kstOffset = 9 * 60 * 60 * 1000;
+            const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+            return formatDateStr(new Date(utc + kstOffset));
+        }
+
+        function getActiveDateString() {
+            const customDateValue = document.getElementById('custom-date').value;
+            return customDateValue || getTodayKstDateString();
+        }
+
         function loadSettings() {
             try {
-                const saved = localStorage.getItem(STORAGE_KEY);
+                let saved = localStorage.getItem(STORAGE_KEY);
+                let migrated = false;
+
+                if (!saved) {
+                    for (const oldKey of LEGACY_STORAGE_KEYS) {
+                        saved = localStorage.getItem(oldKey);
+                        if (saved) {
+                            migrated = true;
+                            break;
+                        }
+                    }
+                }
+
                 if (!saved) {
                     applySettings(DEFAULT_SETTINGS);
                     return;
                 }
+
                 const parsed = JSON.parse(saved);
-                applySettings({ ...DEFAULT_SETTINGS, ...parsed });
+                const merged = { ...DEFAULT_SETTINGS, ...parsed };
+
+                // 예전 버전에서 '여자/남자 먼저'가 매일 고정되어 있던 설정은
+                // 새 버전 최초 실행일을 교대 시작일로 자동 전환합니다.
+                if (merged.manualLunch !== 'auto' && !merged.lunchAnchorDate) {
+                    merged.lunchAnchorDate = getTodayKstDateString();
+                    migrated = true;
+                }
+
+                applySettings(merged);
+
+                if (migrated) {
+                    try {
+                        localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+                    } catch (_) {}
+                }
             } catch (error) {
                 console.error('설정 불러오기 실패:', error);
                 applySettings(DEFAULT_SETTINGS);
@@ -280,12 +323,24 @@
         }
 
         function saveSettings() {
+            const selectedLunch = document.getElementById('manual-lunch').value;
+            let lunchAnchorDate = currentSettings?.lunchAnchorDate || '';
+
+            // 급식 시작 성별을 새로 바꾼 순간의 표시 날짜를 교대 기준일로 저장합니다.
+            // 휴업일 등 다른 설정만 수정해 다시 저장할 때는 기존 기준일을 유지합니다.
+            if (selectedLunch === 'auto') {
+                lunchAnchorDate = '';
+            } else if (!currentSettings || currentSettings.manualLunch !== selectedLunch || !lunchAnchorDate) {
+                lunchAnchorDate = getActiveDateString();
+            }
+
             const settings = {
                 holidayList: document.getElementById('holiday-list').value.trim(),
                 vacationStart: document.getElementById('vacation-start').value,
                 vacationEnd: document.getElementById('vacation-end').value,
                 manualTeam: document.getElementById('manual-team').value,
-                manualLunch: document.getElementById('manual-lunch').value
+                manualLunch: selectedLunch,
+                lunchAnchorDate
             };
 
             // 저장 성공 여부와 관계없이 현재 화면에는 즉시 반영
@@ -440,48 +495,54 @@
             if (manualTeamValue !== "auto") {
                 currentTeam = manualTeamValue;
             }
-            if (manualLunchValue !== "auto") {
-                currentLunch = manualLunchValue;
-            }
 
-            // 자동 계산 처리를 위한 로직 수정
-            if (manualTeamValue === "auto" || manualLunchValue === "auto") {
-                // 🛠️ 변동 사항: 기준점을 요청하신 2026년 6월 4일(목)로 변경
-                const baseDate = new Date("2026-06-04T00:00:00");
-                let schoolDaysCount = 0;
-
-                if (targetDate >= baseDate) {
-                    let loopDate = new Date(baseDate);
-                    while (loopDate < targetDate) {
+            function countSchoolDaysFrom(baseDateObj, targetDateObj) {
+                let count = 0;
+                if (targetDateObj >= baseDateObj) {
+                    let loopDate = new Date(baseDateObj);
+                    while (loopDate < targetDateObj) {
                         const loopStatus = checkHolidayStatus(loopDate, vacStart, vacEnd, holidayMap);
-                        if (!loopStatus.isHoliday) {
-                            schoolDaysCount++;
-                        }
+                        if (!loopStatus.isHoliday) count++;
                         loopDate.setDate(loopDate.getDate() + 1);
                     }
                 } else {
-                    let loopDate = new Date(baseDate);
-                    while (loopDate > targetDate) {
+                    let loopDate = new Date(baseDateObj);
+                    while (loopDate > targetDateObj) {
                         loopDate.setDate(loopDate.getDate() - 1);
                         const loopStatus = checkHolidayStatus(loopDate, vacStart, vacEnd, holidayMap);
-                        if (!loopStatus.isHoliday) {
-                            schoolDaysCount--;
-                        }
+                        if (!loopStatus.isHoliday) count--;
                     }
                 }
+                return count;
+            }
 
-                // 🛠️ 변동 사항: 6/4 당일 순서가 '초록 모둠', '여자 먼저'가 되도록 배열 첫 번째(Index 0)에 배치
+            // 모둠 자동 로테이션: 기존 2026-06-04 기준 유지
+            if (manualTeamValue === "auto") {
+                const baseDate = new Date("2026-06-04T00:00:00");
+                const schoolDaysCount = countSchoolDaysFrom(baseDate, targetDate);
                 const teams = ['초록 모둠', '파랑 모둠', '보라 모둠', '빨강 모둠', '노랑 모둠'];
-                const lunch = ['여자 먼저 👧', '남자 먼저 👦'];
+                const teamIdx = ((schoolDaysCount % teams.length) + teams.length) % teams.length;
+                currentTeam = teams[teamIdx];
+            }
 
-                if (manualTeamValue === "auto") {
-                    const teamIdx = ((schoolDaysCount % teams.length) + teams.length) % teams.length;
-                    currentTeam = teams[teamIdx];
-                }
-                if (manualLunchValue === "auto") {
-                    const lunchIdx = ((schoolDaysCount % lunch.length) + lunch.length) % lunch.length;
-                    currentLunch = lunch[lunchIdx];
-                }
+            // 급식 순서
+            if (manualLunchValue === "auto") {
+                // 기존 기본 로테이션: 2026-06-04가 여자 먼저
+                const baseDate = new Date("2026-06-04T00:00:00");
+                const schoolDaysCount = countSchoolDaysFrom(baseDate, targetDate);
+                const lunch = ['여자 먼저 👧', '남자 먼저 👦'];
+                const lunchIdx = ((schoolDaysCount % lunch.length) + lunch.length) % lunch.length;
+                currentLunch = lunch[lunchIdx];
+            } else {
+                // 사용자가 선택한 날짜를 시작점으로 이후 등교일마다 성별을 자동 교대
+                const anchorStr = currentSettings?.lunchAnchorDate || getTodayKstDateString();
+                const anchorDate = new Date(anchorStr + "T00:00:00");
+                const schoolDaysCount = countSchoolDaysFrom(anchorDate, targetDate);
+                const lunch = manualLunchValue.startsWith('여자')
+                    ? ['여자 먼저 👧', '남자 먼저 👦']
+                    : ['남자 먼저 👦', '여자 먼저 👧'];
+                const lunchIdx = ((schoolDaysCount % lunch.length) + lunch.length) % lunch.length;
+                currentLunch = lunch[lunchIdx];
             }
 
             const teamElement = document.getElementById('today-team');
